@@ -7,9 +7,12 @@ import { costAnthropic } from '../lib/pricing.js';
 const ROOT = path.join(os.homedir(), '.claude', 'projects');
 
 // Claude Code writes one JSONL line per assistant content block; the same API
-// response (same message.id + requestId) repeats its usage on each line, and a
-// streaming update can revise counts upward. Track last-seen usage per key and
-// emit only the delta.
+// response (same message.id) repeats its usage on each line, and a streaming
+// update can revise counts upward. Track last-seen usage per message and emit
+// only the delta — this yields the final (largest) usage per response, which
+// is what ccusage settles on too. Keying on message.id alone (not requestId)
+// also collapses the copies a sidechain (/btw) or forked session replays under
+// new request ids.
 export function startClaudeCode({ store, backfillStart, persist = null }) {
   const seen = new Map(); // dedupe key -> last usage totals
 
@@ -17,8 +20,12 @@ export function startClaudeCode({ store, backfillStart, persist = null }) {
     backfillStart,
     persist,
     listFiles: async () => {
-      // Transcripts live at <project>/<uuid>.jsonl, and subagent transcripts
-      // at <project>/<sessionId>/subagents/agent-*.jsonl — walk recursively.
+      // Transcripts live at <project>/<uuid>.jsonl, subagent transcripts at
+      // <project>/<sessionId>/subagents/agent-*.jsonl, and Workflow-tool
+      // subagents one level deeper still at
+      // <project>/<sessionId>/subagents/workflows/<wf>/agent-*.jsonl — walk
+      // the whole tree (ccusage does too; a depth cap here silently drops the
+      // parallel-agent usage that is often the bulk of a day's spend).
       const files = [];
       const walk = async (dir, depth) => {
         let entries;
@@ -31,7 +38,7 @@ export function startClaudeCode({ store, backfillStart, persist = null }) {
           entries.map(async (e) => {
             const full = path.join(dir, e.name);
             if (e.isFile() && e.name.endsWith('.jsonl')) files.push(full);
-            else if (e.isDirectory() && depth < 4) await walk(full, depth + 1);
+            else if (e.isDirectory() && depth < 12) await walk(full, depth + 1);
           })
         );
       };
@@ -94,7 +101,7 @@ export function startClaudeCode({ store, backfillStart, persist = null }) {
         cacheW5m: cc.ephemeral_5m_input_tokens ?? (u.cache_creation_input_tokens || 0),
         cacheW1h: cc.ephemeral_1h_input_tokens || 0,
       };
-      const key = `${msg.id || file}|${obj.requestId || ''}`;
+      const key = msg.id || `${file}|${obj.requestId || obj.uuid || ''}`;
       const prev = seen.get(key);
       let delta = cur;
       if (prev) {

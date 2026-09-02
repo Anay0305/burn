@@ -27,15 +27,15 @@ Coding agents burn tokens fast and quietly. `ccusage` tells you what yesterday c
 - **Live activity ticker** — tool names, turn boundaries, compactions, model switches, with the token/cost delta of each step
 - **Per-session pages**, 5m/15m/1h/24h ranges, forecast to midnight, light & dark themes
 
-Numbers cross-check against `ccusage daily` to within rounding — including the **subagent transcripts** that most tools miss (on a parallel-agent workload that's a 30%+ undercount).
+Numbers cross-check against `ccusage daily` to the cent (`npm run check:ccusage` prints both side by side) — same LiteLLM price table, same dedupe rules, and the **nested subagent transcripts** (Task and Workflow agents) that a shallow directory walk misses. On a parallel-agent workload that's a 30%+ undercount.
 
 ## Sources
 
 | Agent | Reads | Notes |
 |---|---|---|
-| Claude Code | `~/.claude/projects/**/*.jsonl` | per-response `usage`, cache read / 5m / 1h write split, deduped by `message.id + requestId`; includes `<session>/subagents/*.jsonl` |
-| Codex CLI | `~/.codex/sessions/YYYY/MM/DD/*.jsonl` | cumulative `token_count` events, diffed per rollout; rate-limit headroom when reported |
-| OpenCode | `~/.local/share/opencode/opencode.db` | read-only SQLite via `node:sqlite`; assistant-message `tokens` + OpenCode's own `cost`, diffed as rows update |
+| Claude Code | `~/.claude/projects/**/*.jsonl` | per-response `usage`, cache read / 5m / 1h write split, deduped by `message.id` (final usage of a streamed response wins); walks the whole tree, so `<session>/subagents/*.jsonl` and `<session>/subagents/workflows/*/agent-*.jsonl` count |
+| Codex CLI | `~/.codex/sessions/YYYY/MM/DD/*.jsonl` | cumulative `token_count` events, diffed per rollout; forked/subagent threads skip the parent history they replay; `service_tier: priority` bills at the model's fast multiplier; rate-limit headroom when reported |
+| OpenCode | `opencode.db` in `$OPENCODE_DATA_DIR`, `~/.local/share/opencode`, and the Flatpak data dir | read-only SQLite via `node:sqlite`; assistant-message `tokens` (reasoning billed as output) + OpenCode's own `cost`, diffed as rows update |
 
 Gemini CLI isn't supported: its local chat files carry no token usage.
 
@@ -59,7 +59,7 @@ burn serve        # collector only (SSE/API on :4090 + a lightweight vanilla UI)
 burn ask "which project cost the most this week?"   # Claude over aggregates (needs Anthropic creds)
 ```
 
-Everything starts populated: the collector backfills the last 26h of logs (`BACKFILL_HOURS` to change) and, after the first run, restores from its own SQLite store in milliseconds.
+Everything starts populated: the collector backfills the last 26h of logs (`BACKFILL_HOURS` to change) and, after the first run, restores from its own SQLite store in milliseconds. When an upgrade changes how logs are read or priced, the store is dropped and rebuilt from the logs automatically.
 
 ### Always-on collector (recommended)
 
@@ -93,11 +93,14 @@ It runs in the alternate screen buffer with synchronized-output frames (no flick
 
 ## Pricing
 
-`src/pricing.json` — USD per 1M tokens, matched by exact id → date-stripped id → longest prefix → longest substring (so gateway ids like `antigravity-claude-sonnet-4-6` price at the embedded model's rates).
+Rates come from [LiteLLM's model price table](https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json) — the same source `ccusage` uses — so the two agree. The collector and TUI refresh it on start (cached 24h in `~/.local/share/agent-monitor/pricing-cache.json`); set `BURN_OFFLINE=1` to skip the network and use the bundled `src/pricing.json`, which `npm run pricing:update` regenerates from the same table.
 
-- Anthropic: cache read = 0.1× input, cache write = 1.25× (5m TTL) / 2× (1h TTL)
-- OpenAI-style: `cached_input_tokens` billed at `cachedIn`; cache writes are ordinary input
+- Every model carries its own cache-read / 5m-write / 1h-write rates (e.g. `claude-fable-5-1` reads cache at $0.25/M, not 10% of input); the Anthropic 10% / 125% / 200% multipliers are only the fallback for models without them
+- Model ids resolve exact → alias → date-stripped → provider prefix stripped → boundary-aware fuzzy match, and a key never matches a longer version (`gpt-5` does not price `gpt-5.6-sol`; `claude-fable-5` does not price `claude-fable-5-1`)
+- `pricingOverrides` in `~/.config/claude/ccusage.json` (ccusage's format) are honoured, so custom gateway models price identically in both tools
+- Codex priority/fast tier: 2× for gpt-5.6 (from LiteLLM / ccusage's multiplier table)
 - Unknown models still count tokens; their cost is excluded and the UI says so
+- `npm run check:ccusage [-- --since YYYY-MM-DD]` replays the logs and prints BURN vs `ccusage daily` per day and model
 
 Costs are **API list rates**. Subscription plans bill differently — treat the dollar figures as "what this would cost on the API".
 
@@ -105,7 +108,7 @@ Costs are **API list rates**. Subscription plans bill differently — treat the 
 
 Set `BURN_MASK=1` on the collector or TUI to replace every project path with a stable pseudonym (`~/work/project-a`, `-b`, …) in all output — for screenshots, screen-shares and demos. The screenshots in this README were taken that way.
 
-BURN reads *metadata*: token counts, model ids, timestamps, stop reasons, tool **names**, and the working-directory path. It never reads or stores prompt text, tool inputs/outputs, or message content. The only network call in the whole project is `burn ask`, which sends per-day/per-project/per-model **aggregates** to the Claude API — and only when you invoke it.
+BURN reads *metadata*: token counts, model ids, timestamps, stop reasons, tool **names**, and the working-directory path. It never reads or stores prompt text, tool inputs/outputs, or message content. BURN makes two kinds of network call: a once-a-day fetch of LiteLLM's public price table (a static JSON file; nothing about you is sent, and `BURN_OFFLINE=1` turns it off), and `burn ask`, which sends per-day/per-project/per-model **aggregates** to the Claude API — and only when you invoke it.
 
 ## Architecture
 

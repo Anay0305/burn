@@ -19,6 +19,11 @@ export class Tailer {
     this.known = [];
     this.lastList = 0;
     this.stopped = false;
+    // Resolves once the first full pass over every file has finished — i.e.
+    // the backfill is in. Lets one-shot tools run a single pass and stop.
+    this.firstPoll = new Promise((resolve) => {
+      this._resolveFirstPoll = resolve;
+    });
   }
 
   getExtra(file) {
@@ -37,6 +42,10 @@ export class Tailer {
         await this.poll();
       } catch (err) {
         console.error('[tailer] poll error:', err.message);
+      }
+      if (this._resolveFirstPoll) {
+        this._resolveFirstPoll();
+        this._resolveFirstPoll = null;
       }
       const elapsed = Date.now() - t0;
       await sleep(Math.max(100, this.pollMs - elapsed));

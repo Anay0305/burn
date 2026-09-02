@@ -6,6 +6,7 @@ import { Store } from '../lib/store.js';
 import { startClaudeCode } from '../sources/claude-code.js';
 import { startCodex } from '../sources/codex.js';
 import { startOpenCode } from '../sources/opencode.js';
+import { loadPricing } from '../lib/pricing.js';
 import {
   html, render, Box, Text, useApp, useInput, useStdout, useState, useEffect,
 } from './h.js';
@@ -17,6 +18,7 @@ import {
 const BACKFILL_HOURS = Number(process.env.BACKFILL_HOURS || 26);
 const store = new Store();
 const backfillStart = Date.now() - BACKFILL_HOURS * 3600 * 1000;
+await loadPricing(); // same LiteLLM table ccusage uses; bundled fallback offline
 startClaudeCode({ store, backfillStart });
 startCodex({ store, backfillStart });
 startOpenCode({ store, backfillStart });

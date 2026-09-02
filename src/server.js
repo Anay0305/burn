@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { Store } from './lib/store.js';
 import { openDb, fileStateStore } from './lib/db.js';
 import { startNotifier } from './lib/notify.js';
+import { loadPricing } from './lib/pricing.js';
 import { startClaudeCode } from './sources/claude-code.js';
 import { startCodex } from './sources/codex.js';
 import { startOpenCode } from './sources/opencode.js';
@@ -51,6 +52,13 @@ try {
 } catch (err) {
   console.error('agent-monitor: persistence unavailable, running in-memory:', err.message);
 }
+
+// Pricing first: events are priced at ingest, so the table has to be current
+// before the backfill starts. Pulls the same LiteLLM table ccusage uses (24h
+// disk cache; BURN_OFFLINE=1 keeps it on the bundled src/pricing.json).
+const pricing = await loadPricing();
+console.log(`agent-monitor: pricing from ${pricing.source} (${pricing.models} models${pricing.overrides ? `, ${pricing.overrides} ccusage overrides` : ''})`);
+setInterval(() => loadPricing().catch(() => {}), 24 * 3600 * 1000).unref();
 
 startClaudeCode({ store, backfillStart, persist });
 startCodex({ store, backfillStart, persist });

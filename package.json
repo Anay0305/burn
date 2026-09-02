@@ -6,7 +6,9 @@
   "scripts": {
     "start": "node src/server.js",
     "tui": "node src/tui/index.js",
-    "web": "node scripts/dev.js"
+    "web": "node scripts/dev.js",
+    "pricing:update": "node scripts/update-pricing.js",
+    "check:ccusage": "node scripts/check-ccusage.js"
   },
   "engines": {
     "node": ">=22.5"

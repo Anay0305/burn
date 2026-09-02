@@ -1,0 +1,43 @@
+{
+  "name": "burn",
+  "version": "0.1.0",
+  "description": "BURN — live token & cost burn-rate monitor for coding agents (Claude Code, Codex, OpenCode). Web dashboard, full-screen TUI, notifications.",
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js",
+    "tui": "node src/tui/index.js",
+    "web": "node scripts/dev.js"
+  },
+  "engines": {
+    "node": ">=22.5"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.122.0",
+    "cfonts": "^3.3.1",
+    "chalk": "^6.0.0",
+    "gradient-string": "^3.0.0",
+    "htm": "^3.1.1",
+    "ink": "^5.2.1",
+    "react": "^18.3.1",
+    "unicode-animations": "^1.0.3"
+  },
+  "license": "MIT",
+  "author": "Anay Gupta",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Anay0305/burn.git"
+  },
+  "bin": {
+    "burn": "bin/burn"
+  },
+  "keywords": [
+    "claude-code",
+    "codex",
+    "opencode",
+    "tokens",
+    "cost",
+    "monitor",
+    "tui",
+    "dashboard"
+  ]
+}

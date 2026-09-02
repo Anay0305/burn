@@ -1,0 +1,29 @@
+{
+  "_comment": "USD per 1M tokens. Models matched by exact id, then date-suffix-stripped id, then longest prefix. Edit freely; server picks changes up on restart.",
+  "anthropicCacheMultipliers": {
+    "read": 0.1,
+    "write5m": 1.25,
+    "write1h": 2.0
+  },
+  "models": {
+    "claude-fable-5": { "in": 10, "out": 50 },
+    "claude-mythos-5": { "in": 10, "out": 50 },
+    "claude-opus-5": { "in": 5, "out": 25 },
+    "claude-opus-4-8": { "in": 5, "out": 25 },
+    "claude-opus-4-7": { "in": 5, "out": 25 },
+    "claude-opus-4-6": { "in": 5, "out": 25 },
+    "claude-opus-4-5": { "in": 5, "out": 25 },
+    "claude-opus-4-1": { "in": 15, "out": 75 },
+    "claude-opus-4": { "in": 15, "out": 75 },
+    "claude-sonnet-5": { "in": 3, "out": 15 },
+    "claude-sonnet-4-6": { "in": 3, "out": 15 },
+    "claude-sonnet-4-5": { "in": 3, "out": 15 },
+    "claude-sonnet-4": { "in": 3, "out": 15 },
+    "claude-haiku-4-5": { "in": 1, "out": 5 },
+    "claude-haiku-3-5": { "in": 0.8, "out": 4 },
+    "gpt-5.1": { "in": 1.25, "out": 10, "cachedIn": 0.125 },
+    "gpt-5-mini": { "in": 0.25, "out": 2, "cachedIn": 0.025 },
+    "gpt-5-nano": { "in": 0.05, "out": 0.4, "cachedIn": 0.005 },
+    "gpt-5": { "in": 1.25, "out": 10, "cachedIn": 0.125 }
+  }
+}

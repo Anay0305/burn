@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>agent monitor</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%230d0d0d'/%3E%3Ccircle cx='8' cy='8' r='4' fill='%233987e5'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">AGENT MONITOR</div>
+  <div class="conn" id="conn"><span class="dot" id="connDot"></span><span id="connText">connecting</span><span class="clock" id="clock"></span></div>
+</header>
+
+<main>
+  <section class="hero">
+    <div class="hero-meter">
+      <div class="eyebrow">Spent today</div>
+      <div class="meter" id="meter">$0.000</div>
+      <div class="hero-sub" id="heroSub">—</div>
+    </div>
+    <div class="hero-rates">
+      <div class="rate">
+        <div class="eyebrow">Burn</div>
+        <div class="rate-val"><span id="rCostMin">$0</span><span class="unit">/min</span></div>
+        <svg id="sparkCost" class="spark" viewBox="0 0 120 26" preserveAspectRatio="none" aria-hidden="true"></svg>
+      </div>
+      <div class="rate">
+        <div class="eyebrow">Tokens</div>
+        <div class="rate-val"><span id="rTokMin">0</span><span class="unit">/min</span></div>
+      </div>
+      <div class="rate">
+        <div class="eyebrow">Output</div>
+        <div class="rate-val"><span id="rOutSec">0</span><span class="unit">tok/s</span></div>
+      </div>
+    </div>
+  </section>
+  <p class="footnote" id="unpricedNote" hidden></p>
+
+  <div class="rule"></div>
+
+  <section class="filters">
+    <div class="seg" id="rangeSeg" role="group" aria-label="Chart range">
+      <button data-range="300">5m</button>
+      <button data-range="900" class="on" aria-pressed="true">15m</button>
+      <button data-range="3600">1h</button>
+    </div>
+    <div class="seg" id="modeSeg" role="group" aria-label="Token counting">
+      <button data-mode="all" class="on" aria-pressed="true">All tokens</button>
+      <button data-mode="out">Output only</button>
+    </div>
+  </section>
+
+  <section class="charts">
+    <div class="card">
+      <div class="card-head">
+        <div class="eyebrow">Cost · $/min · rolling 60s</div>
+        <div class="legend" id="legendCost"></div>
+      </div>
+      <div class="plot" id="plotCost"></div>
+    </div>
+    <div class="card">
+      <div class="card-head">
+        <div class="eyebrow" id="tokTitle">Tokens · tok/min · rolling 60s</div>
+        <div class="legend" id="legendTok"></div>
+      </div>
+      <div class="plot" id="plotTok"></div>
+    </div>
+  </section>
+
+  <section class="card table-card">
+    <div class="card-head">
+      <div class="eyebrow">Sessions · last 24h</div>
+      <div class="chips" id="agentChips"></div>
+    </div>
+    <table id="sessions">
+      <thead>
+        <tr>
+          <th>Agent</th><th>Project</th><th>Model</th>
+          <th class="num">tok/s</th><th class="num">$/min</th>
+          <th class="num">Tokens</th><th class="num">Cost</th><th class="num">Active</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <p class="footnote">Priced at API list rates from <span class="mono">src/pricing.json</span> — subscription plans may bill differently.</p>
+</main>
+
+<div class="tooltip" id="tooltip" hidden></div>
+<script src="/app.js"></script>
+</body>
+</html>

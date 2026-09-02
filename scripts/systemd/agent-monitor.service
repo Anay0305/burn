@@ -1,0 +1,17 @@
+[Unit]
+Description=agent-monitor collector (burn dashboard backend)
+After=network-online.target
+
+[Service]
+# Adjust if the repo lives elsewhere.
+WorkingDirectory=%h/Desktop/Projects/agent-monitor
+ExecStart=/usr/bin/env node src/server.js
+Restart=on-failure
+RestartSec=5
+
+# Optional budget alerts (desktop notifications):
+#   Environment=BURN_ALERT_PER_MIN=15
+#   Environment=BURN_ALERT_TODAY=2500
+
+[Install]
+WantedBy=default.target

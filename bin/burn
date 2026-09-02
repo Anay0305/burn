@@ -1,0 +1,28 @@
+#!/usr/bin/env sh
+# BURN launcher. Symlink this onto your PATH:
+#   ln -s "$(pwd)/bin/burn" ~/.local/bin/burn
+#
+#   burn              full-screen TUI (standalone, tails logs directly)
+#   burn web          collector + Next.js dashboard (http://localhost:3000)
+#   burn serve        collector only (SSE/API on :4090 + lightweight vanilla UI)
+#   burn ask "..."    ask Claude about your usage (aggregates only; needs Anthropic creds)
+#
+# Env passes through: BACKFILL_HOURS, PORT, COLLECTOR_URL, BURN_ALERT_PER_MIN, BURN_ALERT_TODAY.
+
+# Resolve the repo root through symlinks.
+SELF="$0"
+while [ -L "$SELF" ]; do
+  DIR="$(cd "$(dirname "$SELF")" && pwd)"
+  SELF="$(readlink "$SELF")"
+  case "$SELF" in /*) ;; *) SELF="$DIR/$SELF" ;; esac
+done
+ROOT="$(cd "$(dirname "$SELF")/.." && pwd)"
+
+case "${1:-tui}" in
+  tui) exec node "$ROOT/src/tui/index.js" ;;
+  web) exec node "$ROOT/scripts/dev.js" ;;
+  serve) exec node "$ROOT/src/server.js" ;;
+  ask) shift; exec node "$ROOT/src/cli/ask.js" "$@" ;;
+  -h|--help|help) sed -n '3,10p' "$SELF" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  *) echo "usage: burn [tui|web|serve|ask <question>]" >&2; exit 1 ;;
+esac

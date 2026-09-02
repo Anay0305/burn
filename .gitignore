@@ -1,0 +1,14 @@
+# deps / builds
+node_modules/
+web/.next/
+web/out/
+*.tsbuildinfo
+web/next-env.d.ts
+
+# local tooling & secrets (never ship)
+.maestro/
+maestro.toml*
+.env*
+*.log
+
+# runtime data lives in ~/.local/share/agent-monitor, not here

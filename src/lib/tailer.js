@@ -8,13 +8,14 @@ import { promises as fsp } from 'node:fs';
 // and an opaque per-file `extra` a source may attach via setExtra() — survive
 // restarts, so nothing is re-parsed and cumulative counters keep their base.
 export class Tailer {
-  constructor({ listFiles, onLine, backfillStart, pollMs = 1500, relistMs = 10_000, persist = null }) {
+  constructor({ listFiles, onLine, backfillStart, pollMs = 1500, relistMs = 10_000, persist = null, onRollback = () => {} }) {
     this.listFiles = listFiles;
     this.onLine = onLine;
     this.backfillStart = backfillStart;
     this.pollMs = pollMs;
     this.relistMs = relistMs;
     this.persist = persist;
+    this.onRollback = onRollback;
     this.files = new Map(); // path -> { offset, remainder, extra }
     this.known = [];
     this.lastList = 0;
@@ -75,10 +76,10 @@ export class Tailer {
         const saved = this.persist?.load(file);
         state =
           saved && saved.offset <= st.size
-            ? { offset: saved.offset, remainder: '', extra: saved.extra }
+            ? { offset: saved.offset, remainder: Buffer.alloc(0), extra: saved.extra }
             : {
                 offset: st.mtimeMs >= this.backfillStart ? 0 : st.size,
-                remainder: '',
+                remainder: Buffer.alloc(0),
                 extra: null,
               };
         this.files.set(file, state);
@@ -86,12 +87,22 @@ export class Tailer {
       if (st.size < state.offset) {
         // truncated/rewritten — start over
         state.offset = 0;
-        state.remainder = '';
+        state.remainder = Buffer.alloc(0);
         state.extra = null;
       }
       if (st.size > state.offset) {
-        await this.readChunk(file, state, st.size);
-        this.persist?.save(file, state.offset, state.extra);
+        const before = structuredClone(state);
+        const read = async () => {
+          await this.readChunk(file, state, st.size);
+          this.persist?.save(file, state.offset - state.remainder.length, state.extra);
+        };
+        try {
+          await (this.persist?.batch ? this.persist.batch(read) : read());
+        } catch (err) {
+          this.files.set(file, before);
+          this.onRollback(file);
+          throw err;
+        }
       }
     }
   }
@@ -108,18 +119,18 @@ export class Tailer {
         if (bytesRead === 0) break;
         pos += bytesRead;
         remaining -= bytesRead;
-        const text = state.remainder + buf.toString('utf8', 0, bytesRead);
-        const lines = text.split('\n');
-        state.remainder = lines.pop();
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed) continue;
-          try {
-            this.onLine(file, JSON.parse(trimmed));
-          } catch {
-            // partial/corrupt line — ignore
-          }
+        const data = Buffer.concat([state.remainder, buf.subarray(0, bytesRead)]);
+        let start = 0;
+        let end;
+        while ((end = data.indexOf(10, start)) !== -1) {
+          const line = data.toString('utf8', start, end).trim();
+          start = end + 1;
+          if (!line) continue;
+          let obj;
+          try { obj = JSON.parse(line); } catch { continue; }
+          await this.onLine(file, obj);
         }
+        state.remainder = Buffer.from(data.subarray(start));
       }
       state.offset = pos;
     } finally {

@@ -61,6 +61,14 @@ burn ask "which project cost the most this week?"   # Claude over aggregates (ne
 
 Everything starts populated: the collector backfills the last 26h of logs (`BACKFILL_HOURS` to change) and, after the first run, restores from its own SQLite store in milliseconds. When an upgrade changes how logs are read or priced, the store is dropped and rebuilt from the logs automatically.
 
+### Accounting and reporting windows
+
+Session rows, session details, and top projects report the trailing **24 hours**. “Spent today” starts at local midnight. Project totals and active/waiting counts include all matching sessions, even when the session table displays only the latest 40. Future-dated events enter current metrics only when their timestamps become due.
+
+The collector commits each source batch and its checkpoint in one SQLite transaction. Failed or interrupted reads can be replayed without partially committed usage. OpenCode tracks the cumulative amount already counted, so late provider costs replace estimates and cost-only corrections are retained. Negative cost adjustments represent a correction to an earlier estimate. Persisted event details keep service-tier multipliers and cost breakdowns consistent across restart.
+
+Run the isolated regression suite with `npm test`; it uses temporary logs and databases.
+
 ### Always-on collector (recommended)
 
 ```sh

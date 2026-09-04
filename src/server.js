@@ -3,7 +3,8 @@ import { promises as fsp } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Store } from './lib/store.js';
-import { openDb, fileStateStore } from './lib/db.js';
+import { openDb } from './lib/db.js';
+import { sourcePersistence } from './lib/persistence.js';
 import { startNotifier } from './lib/notify.js';
 import { loadPricing } from './lib/pricing.js';
 import { startClaudeCode } from './sources/claude-code.js';
@@ -32,16 +33,7 @@ let persist = null;
 try {
   const db = openDb();
   const restored = store.attachDb(db);
-  const files = fileStateStore(db);
-  // Flush pending events before advancing offsets — an offset ahead of its
-  // events would silently drop them on a crash.
-  persist = {
-    load: files.load,
-    save: (p, offset, extra) => {
-      store.flushDb();
-      files.save(p, offset, extra);
-    },
-  };
+  persist = sourcePersistence(store, db);
   console.log(`agent-monitor: restored ${restored} events from db`);
   for (const sig of ['SIGINT', 'SIGTERM']) {
     process.on(sig, () => {

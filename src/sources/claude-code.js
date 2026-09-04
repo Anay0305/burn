@@ -13,12 +13,22 @@ const ROOT = path.join(os.homedir(), '.claude', 'projects');
 // is what ccusage settles on too. Keying on message.id alone (not requestId)
 // also collapses the copies a sidechain (/btw) or forked session replays under
 // new request ids.
-export function startClaudeCode({ store, backfillStart, persist = null }) {
+export function startClaudeCode({ store, backfillStart, persist = null, root = ROOT, start = true }) {
   const seen = new Map(); // dedupe key -> last usage totals
+  const restore = (extra) => {
+    for (const [key, usage] of Object.entries(extra?.usage || {})) {
+      const previous = seen.get(key) || {};
+      seen.set(key, Object.fromEntries(Object.entries(usage).map(([k, v]) => [k, Math.max(v, previous[k] || 0)])));
+    }
+  };
 
   const tailer = new Tailer({
     backfillStart,
     persist,
+    onRollback: () => {
+      seen.clear();
+      for (const state of tailer.files.values()) restore(state.extra);
+    },
     listFiles: async () => {
       // Transcripts live at <project>/<uuid>.jsonl, subagent transcripts at
       // <project>/<sessionId>/subagents/agent-*.jsonl, and Workflow-tool
@@ -42,7 +52,10 @@ export function startClaudeCode({ store, backfillStart, persist = null }) {
           })
         );
       };
-      await walk(ROOT, 0);
+      await walk(root, 0);
+      for (const file of files) {
+        if (!tailer.files.has(file)) restore(persist?.load(file)?.extra);
+      }
       return files;
     },
     onLine: (file, obj) => {
@@ -113,13 +126,12 @@ export function startClaudeCode({ store, backfillStart, persist = null }) {
           cacheW1h: Math.max(0, cur.cacheW1h - prev.cacheW1h),
         };
       }
-      seen.set(key, cur);
-      if (seen.size > 50_000) {
-        for (const k of seen.keys()) {
-          seen.delete(k);
-          if (seen.size <= 25_000) break;
-        }
-      }
+      const high = Object.fromEntries(Object.entries(cur).map(([k, v]) => [k, Math.max(v, prev?.[k] || 0)]));
+      seen.set(key, high);
+      const extra = tailer.getExtra(file) || { usage: {} };
+      extra.usage ||= {};
+      extra.usage[key] = high;
+      tailer.setExtra(file, extra);
       const total = delta.in + delta.out + delta.cacheRead + delta.cacheW5m + delta.cacheW1h;
       if (total === 0) return;
       const cost = costAnthropic(msg.model, delta);
@@ -150,6 +162,6 @@ export function startClaudeCode({ store, backfillStart, persist = null }) {
     },
   });
 
-  tailer.start();
+  if (start) tailer.start();
   return tailer;
 }

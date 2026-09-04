@@ -1,6 +1,7 @@
 // In-memory event store + rate/bucket math.
 // An event: { t, agent, session, model, cwd, in, out, cacheRead, cacheW5m, cacheW1h, cost, priced }
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import path from 'node:path';
 import os from 'node:os';
 import { costParts, costUncached } from './pricing.js';
@@ -11,6 +12,7 @@ const PEAKS_PATH = path.join(os.homedir(), '.local', 'share', 'agent-monitor', '
 export class Store {
   constructor() {
     this.events = [];
+    this.sourceBatches = new AsyncLocalStorage();
     this.sessions = new Map(); // `${agent}:${session}` -> aggregate
     this.dirty = false;
     // Live activity ticker — metadata only, live events only (backfill and
@@ -139,6 +141,11 @@ export class Store {
   }
 
   add(ev, { fromDb = false } = {}) {
+    const batch = this.sourceBatches.getStore();
+    if (batch && !fromDb) {
+      batch.events.push(ev);
+      return;
+    }
     if (ev.costNc == null) {
       ev.costNc = costUncached(ev.agent, ev.model, ev) ?? ev.cost;
     }
@@ -179,7 +186,7 @@ export class Store {
   attachDb(db) {
     this.db = db;
     this.dbInsert = db.prepare(
-      'INSERT INTO events(t, agent, session, model, cwd, tin, tout, cr, w5, w1, cost, priced) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)'
+      'INSERT INTO events(t, agent, session, model, cwd, tin, tout, cr, w5, w1, cost, priced, details) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)'
     );
     const cutoff = Date.now() - 25 * 3600 * 1000;
     const rows = db.prepare('SELECT * FROM events WHERE t >= ? ORDER BY t').all(cutoff);
@@ -190,6 +197,7 @@ export class Store {
           in: Number(r.tin), out: Number(r.tout), cacheRead: Number(r.cr),
           cacheW5m: Number(r.w5), cacheW1h: Number(r.w1),
           cost: Number(r.cost), priced: !!r.priced,
+          ...(r.details ? JSON.parse(r.details) : {}),
         },
         { fromDb: true }
       );
@@ -199,29 +207,40 @@ export class Store {
     return rows.length;
   }
 
+  writeEvents(events) {
+    for (const e of events) {
+      this.dbInsert.run(
+        e.t, e.agent, e.session, e.model || '', e.cwd || '',
+        e.in, e.out, e.cacheRead, e.cacheW5m, e.cacheW1h, e.cost, e.priced ? 1 : 0,
+        JSON.stringify({ style: e.style, mult: e.mult, costParts: e.costParts, costNc: e.costNc })
+      );
+    }
+  }
+
   flushDb() {
-    if (!this.dbPending || this.dbPending.length === 0) return;
+    if (!this.dbPending?.length) return true;
     const batch = this.dbPending;
-    this.dbPending = [];
     try {
       this.db.exec('BEGIN');
-      for (const e of batch) {
-        this.dbInsert.run(
-          e.t, e.agent, e.session, e.model || '', e.cwd || '',
-          e.in, e.out, e.cacheRead, e.cacheW5m, e.cacheW1h, e.cost, e.priced ? 1 : 0
-        );
-      }
+      this.writeEvents(batch);
       this.db.exec('COMMIT');
+      this.dbPending = [];
+      return true;
     } catch (err) {
       try { this.db.exec('ROLLBACK'); } catch {}
       console.error('[db] flush failed:', err.message);
+      return false;
     }
   }
 
   prune(now) {
     const cutoff = now - DAY - 3600 * 1000;
+    this.sortIfDirty();
     if (this.events.length && this.events[0].t < cutoff) {
       this.events = this.events.filter((e) => e.t >= cutoff);
+      for (const [key, session] of this.sessions) {
+        if (session.lastT < cutoff) this.sessions.delete(key);
+      }
     }
   }
 
@@ -242,6 +261,7 @@ export class Store {
     for (let i = this.events.length - 1; i >= 0; i--) {
       const e = this.events[i];
       if (e.t < from) break;
+      if (e.t > now) continue;
       tokens += totalTokens(e);
       out += e.out;
       cost += e.cost;
@@ -271,13 +291,55 @@ export class Store {
     return { start, stepMs, n, agents };
   }
 
-  sessionRows(now) {
-    const rows = [];
-    for (const s of this.sessions.values()) {
-      rows.push({ ...s, active: now - s.lastT < 5 * 60 * 1000 });
+  // Session rows, details and projects all report [now - 24h, now]. The
+  // extra hour retained in memory is an ingestion buffer, not billable UI history.
+  sessionRows(now, limit = 40) {
+    this.sortIfDirty();
+    const bySession = new Map();
+    for (const e of this.events) {
+      if (e.t < now - DAY || e.t > now) continue;
+      const key = `${e.agent}:${e.session}`;
+      let row = bySession.get(key);
+      if (!row) {
+        const session = this.sessions.get(key);
+        row = { ...session, firstT: e.t, lastT: e.t, tokens: 0, out: 0, cost: 0, unpriced: false };
+        if ((row.meta?.lastEventT || 0) > now) row.meta = {};
+        bySession.set(key, row);
+      }
+      row.lastT = e.t;
+      row.model = e.model || row.model;
+      row.cwd = e.cwd || row.cwd;
+      row.tokens += totalTokens(e);
+      row.out += e.out;
+      row.cost += e.cost;
+      row.unpriced ||= !e.priced;
     }
-    rows.sort((a, b) => b.lastT - a.lastT);
-    return rows.slice(0, 40);
+    // A prompt may precede the first usage event; keep such live sessions.
+    for (const [key, session] of this.sessions) {
+      const t = session.meta?.lastEventT;
+      if (!(t >= now - DAY && t <= now)) continue;
+      if (!bySession.has(key)) bySession.set(key, { ...session, firstT: t, lastT: t, tokens: 0, out: 0, cost: 0, unpriced: false });
+      bySession.get(key).lastT = Math.max(bySession.get(key).lastT, t);
+    }
+    return [...bySession.values()]
+      .map((s) => ({ ...s, active: now - s.lastT < 5 * 60 * 1000 }))
+      .sort((a, b) => b.lastT - a.lastT)
+      .slice(0, limit);
+  }
+
+  projectRows(sessions) {
+    const projects = new Map();
+    for (const s of sessions) {
+      const cwd = s.cwd;
+      const key = cwd || `${s.agent}:${s.session}`;
+      const p = projects.get(key) || { key, cwd, cost: 0, tokens: 0, sessions: 0, active: false };
+      p.cost += s.cost;
+      p.tokens += s.tokens;
+      p.sessions++;
+      p.active ||= s.state === 'working' || s.state === 'waiting';
+      projects.set(key, p);
+    }
+    return [...projects.values()].sort((a, b) => b.cost - a.cost);
   }
 
   // Recent per-session rates (output tok/s over 30s, $/min over 60s)
@@ -289,6 +351,7 @@ export class Store {
     for (let i = this.events.length - 1; i >= 0; i--) {
       const e = this.events[i];
       if (e.t < from60) break;
+      if (e.t > now) continue;
       const key = `${e.agent}:${e.session}`;
       let r = rates.get(key);
       if (!r) {
@@ -334,7 +397,7 @@ export class Store {
   /** Everything the session detail page needs, in one call. */
   sessionDetail(now, agent, session) {
     const key = `${agent}:${session}`;
-    const s = this.sessions.get(key);
+    const s = this.sessionRows(now, Infinity).find((row) => row.agent === agent && row.session === session);
     if (!s) return null;
     this.sortIfDirty();
     const filter = (e) => e.agent === agent && e.session === session;
@@ -342,7 +405,7 @@ export class Store {
     const costParts = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
     const models = new Set();
     for (const e of this.events) {
-      if (!filter(e)) continue;
+      if (!filter(e) || e.t < now - DAY || e.t > now) continue;
       tin += e.in;
       out += e.out;
       cr += e.cacheRead;
@@ -393,7 +456,7 @@ export class Store {
     const w300 = this.windowSums(now, 300_000);
     const today = this.todaySums(now);
     const rates = this.sessionRates(now);
-    const sessions = this.sessionRows(now).map((s) => {
+    const sessions = this.sessionRows(now, Infinity).map((s) => {
       const r = rates.get(`${s.agent}:${s.session}`) || { out30: 0, cost60: 0 };
       const state = sessionState(s, now);
       return {
@@ -445,7 +508,8 @@ export class Store {
       peaks: this.peaks,
       activeSessions: sessions.filter((s) => s.active).length,
       waiting: sessions.filter((s) => s.state === 'waiting').length,
-      sessions,
+      projects: this.projectRows(sessions),
+      sessions: sessions.slice(0, 40),
       buckets: this.buckets(now),
       buckets24: this.buckets(now, 24 * 3600 * 1000, 5 * 60 * 1000),
     };
@@ -462,6 +526,7 @@ export function sessionState(s, now) {
   const m = s.meta || {};
   const lastT = Math.max(s.lastT || 0, m.lastEventT || 0);
   const age = now - lastT;
+  if (age < 0) return 'idle';
   if (m.lastRole) {
     // claude-code: transcript-aware
     if (

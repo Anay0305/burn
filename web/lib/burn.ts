@@ -36,6 +36,15 @@ export type Buckets = {
 
 export type Peak = { v: number; t: number };
 
+export type ProjectRow = {
+  key: string;
+  cwd: string;
+  cost: number;
+  tokens: number;
+  sessions: number;
+  active: boolean;
+};
+
 export type Snapshot = {
   now: number;
   rates: Rates;
@@ -56,6 +65,7 @@ export type Snapshot = {
   activeSessions: number;
   waiting?: number;
   sessions: SessionRow[];
+  projects: ProjectRow[];
   buckets: Buckets;
   buckets24?: Buckets;
 };

@@ -1,35 +1,13 @@
 "use client";
 
-import { useMemo } from "react";
-import { fmtMoney, fmtTok, type SessionRow } from "@/lib/burn";
+import { fmtMoney, fmtTok, type ProjectRow } from "@/lib/burn";
 
-// Sessions rolled up by project — the table above is per-session, so a
-// project running several sessions (subagent fleets, restarts) only shows its
-// true weight here. Ranked bars, single hue: this encodes magnitude, not
-// identity.
-export function TopProjects({ sessions }: { sessions: SessionRow[] }) {
-  const rows = useMemo(() => {
-    const byProject = new Map<
-      string,
-      { name: string; cost: number; tokens: number; sessions: number; active: boolean }
-    >();
-    for (const s of sessions) {
-      const key = s.cwd || s.session;
-      const cur = byProject.get(key) ?? {
-        name: s.cwd ? s.cwd.split("/").slice(-2).join("/") : s.session.slice(0, 8),
-        cost: 0,
-        tokens: 0,
-        sessions: 0,
-        active: false,
-      };
-      cur.cost += s.cost;
-      cur.tokens += s.tokens;
-      cur.sessions += 1;
-      cur.active = cur.active || s.state === "working" || s.state === "waiting";
-      byProject.set(key, cur);
-    }
-    return [...byProject.values()].sort((a, b) => b.cost - a.cost).slice(0, 6);
-  }, [sessions]);
+// The collector aggregates all sessions before limiting the session table.
+export function TopProjects({ projects }: { projects: ProjectRow[] }) {
+  const rows = projects.slice(0, 6).map((project) => ({
+    ...project,
+    name: project.cwd ? project.cwd.split("/").slice(-2).join("/") : project.key.slice(0, 16),
+  }));
 
   const max = Math.max(...rows.map((r) => r.cost), 1e-9);
 
@@ -41,7 +19,7 @@ export function TopProjects({ sessions }: { sessions: SessionRow[] }) {
       <div className="mt-3 space-y-2.5">
         {rows.map((r) => (
           <div
-            key={r.name}
+            key={r.key}
             className="-mx-1.5 rounded-md px-1.5 py-1 transition-colors duration-150 hover:bg-foreground/[0.05]"
           >
             <div className="flex items-baseline gap-2 text-xs">

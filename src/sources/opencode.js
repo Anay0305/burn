@@ -1,7 +1,7 @@
 import { existsSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { costAnthropic } from '../lib/pricing.js';
+import { costAnthropic, costParts, costUncached } from '../lib/pricing.js';
 
 // OpenCode stores assistant messages in SQLite; rows are inserted at turn
 // start and updated as tokens/cost accumulate, so we watermark on
@@ -44,8 +44,8 @@ function modelOf(d) {
   };
 }
 
-export async function startOpenCode({ store, backfillStart, pollMs = 2000, persist = null }) {
-  const dbs = openCodeDataDirs().map(findDb).filter(Boolean);
+export async function startOpenCode({ store, backfillStart, pollMs = 2000, persist = null, dbPaths = null, start = true }) {
+  const dbs = dbPaths || openCodeDataDirs().map(findDb).filter(Boolean);
   if (!dbs.length) return null;
 
   let DatabaseSync;
@@ -60,9 +60,11 @@ export async function startOpenCode({ store, backfillStart, pollMs = 2000, persi
   const poll = () => {
     for (const r of readers) r.poll();
   };
-  poll();
-  const timer = setInterval(poll, pollMs);
-  return { stop: () => clearInterval(timer), dbs };
+  if (start) poll();
+  const timer = start ? setInterval(() => {
+    try { poll(); } catch (err) { console.error('[opencode] poll failed:', err.message); }
+  }, pollMs) : null;
+  return { poll, stop: () => { clearInterval(timer); for (const r of readers) r.close(); }, dbs };
 
   function openReader(dbPath) {
     let db;
@@ -79,8 +81,8 @@ export async function startOpenCode({ store, backfillStart, pollMs = 2000, persi
       queries.push(
         db.prepare(
           `SELECT id, session_id, time_updated, data FROM message
-           WHERE time_updated > ? AND json_extract(data, '$.role') = 'assistant'
-           ORDER BY time_updated ASC LIMIT 1000`
+           WHERE time_updated >= ? AND json_extract(data, '$.role') = 'assistant'
+           ORDER BY time_updated ASC, id ASC`
         )
       );
     }
@@ -88,105 +90,119 @@ export async function startOpenCode({ store, backfillStart, pollMs = 2000, persi
       queries.push(
         db.prepare(
           `SELECT id, session_id, time_updated, data FROM session_message
-           WHERE time_updated > ? AND data LIKE '%"tokens"%'
-           ORDER BY time_updated ASC LIMIT 1000`
+           WHERE time_updated >= ? AND data LIKE '%"tokens"%'
+           ORDER BY time_updated ASC, id ASC`
         )
       );
     }
-    if (!queries.length) return null;
+    if (!queries.length) { db.close(); return null; }
     // Resume from the persisted watermark so restarts re-read nothing.
     const WM_KEY = `opencode:watermark:${dbPath}`;
-    let watermark = Math.max(backfillStart, persist?.load(WM_KEY)?.offset ?? 0);
-    const seen = new Map(); // message id -> last-seen cumulative usage
+    const saved = persist?.load(WM_KEY);
+    let watermark = Math.max(backfillStart, saved?.offset ?? 0);
+    let seen = new Map(Object.entries(saved?.extra?.seen || {}));
 
-    return {
-      poll() {
-        let rows = [];
+    const read = () => {
+      let rows = [];
+      try {
+        for (const q of queries) rows.push(...q.all(watermark));
+      } catch (err) {
+        console.error(`[opencode] query error (${dbPath}):`, err.message);
+        return;
+      }
+      if (!rows.length) return;
+      rows.sort((a, b) => a.time_updated - b.time_updated);
+
+      for (const row of rows) {
+        watermark = Math.max(watermark, row.time_updated);
+        let d;
         try {
-          for (const q of queries) rows.push(...q.all(watermark));
-        } catch (err) {
-          console.error(`[opencode] query error (${dbPath}):`, err.message);
-          return;
+          d = JSON.parse(row.data);
+        } catch {
+          continue;
         }
-        if (!rows.length) return;
-        rows.sort((a, b) => a.time_updated - b.time_updated);
-        persist?.save(WM_KEY, Math.max(...rows.map((r) => r.time_updated)), null);
-        for (const row of rows) {
-          watermark = Math.max(watermark, row.time_updated);
-          let d;
-          try {
-            d = JSON.parse(row.data);
-          } catch {
-            continue;
-          }
-          const tk = d.tokens;
-          if (!tk || typeof tk !== 'object') continue;
-          const cache = tk.cache && typeof tk.cache === 'object' ? tk.cache : {};
-          // OpenCode reports reasoning apart from output; it is billed as
-          // output, so fold it in (ccusage does the same).
-          const cur = {
-            in: tk.input || 0,
-            out: (tk.output || 0) + (tk.reasoning || 0),
-            cacheRead: cache.read || 0,
-            cacheW5m: cache.write || 0,
-            cacheW1h: 0,
-            cost: d.cost || 0,
-          };
-          const prev = seen.get(row.id) || { in: 0, out: 0, cacheRead: 0, cacheW5m: 0, cacheW1h: 0, cost: 0 };
-          const delta = {
-            in: Math.max(0, cur.in - prev.in),
-            out: Math.max(0, cur.out - prev.out),
-            cacheRead: Math.max(0, cur.cacheRead - prev.cacheRead),
-            cacheW5m: Math.max(0, cur.cacheW5m - prev.cacheW5m),
-            cacheW1h: 0,
-          };
-          const dCost = Math.max(0, cur.cost - prev.cost);
-          seen.set(row.id, cur);
-          if (seen.size > 20_000) {
-            for (const k of seen.keys()) {
-              seen.delete(k);
-              if (seen.size <= 10_000) break;
-            }
-          }
-          const total = delta.in + delta.out + delta.cacheRead + delta.cacheW5m;
-          if (total === 0) continue;
+        const tk = d.tokens;
+        if (!tk || typeof tk !== 'object') continue;
+        const cache = tk.cache && typeof tk.cache === 'object' ? tk.cache : {};
+        // OpenCode reports reasoning apart from output; it is billed as
+        // output, so fold it in (ccusage does the same).
+        const cur = {
+          in: tk.input || 0,
+          out: (tk.output || 0) + (tk.reasoning || 0),
+          cacheRead: cache.read || 0,
+          cacheW5m: cache.write || 0,
+          cacheW1h: 0,
+          cost: d.cost || 0,
+        };
+        const prev = seen.get(row.id) || { in: 0, out: 0, cacheRead: 0, cacheW5m: 0, cacheW1h: 0, cost: 0 };
+        const delta = {
+          in: Math.max(0, cur.in - prev.in),
+          out: Math.max(0, cur.out - prev.out),
+          cacheRead: Math.max(0, cur.cacheRead - prev.cacheRead),
+          cacheW5m: Math.max(0, cur.cacheW5m - prev.cacheW5m),
+          cacheW1h: 0,
+        };
+        // Reconcile against the cumulative amount already emitted, not
+        // only the last provider cost. Costs may arrive late or decrease.
+        const { model, provider } = modelOf(d);
+        const candidates = [model];
+        if (provider && provider !== 'unknown') candidates.push(`${provider.replace(/-/g, '_')}/${model}`);
+        const pricingModel = candidates.find((candidate) => costAnthropic(candidate, cur) != null) || model;
+        const authoritative = Number.isFinite(d.cost) && d.cost >= 0 &&
+          (d.cost > 0 || !!d.time?.completed || prev.authoritative);
+        const estimated = costAnthropic(pricingModel, cur);
+        const previousCost = prev.chargedCost ?? (prev.cost || costAnthropic(pricingModel, prev) || 0);
+        const chargedCost = authoritative ? d.cost : (estimated ?? previousCost);
+        const priced = authoritative || estimated != null;
+        const cost = chargedCost - previousCost;
+        const partsAt = (u, amount) => {
+          const parts = costParts('opencode', pricingModel, { ...u, style: 'anthropic' });
+          const sum = parts && Object.values(parts).reduce((a, b) => a + b, 0);
+          return sum > 0
+            ? Object.fromEntries(Object.entries(parts).map(([k, value]) => [k, value * amount / sum]))
+            : { input: amount, output: 0, cacheRead: 0, cacheWrite: 0 };
+        };
+        const parts = partsAt(cur, chargedCost);
+        const previousParts = prev.parts || partsAt(prev, previousCost);
+        const partDelta = Object.fromEntries(Object.entries(parts).map(([k, value]) => [k, value - previousParts[k]]));
+        const uncached = costUncached('opencode', pricingModel, { ...cur, style: 'anthropic' }) ?? chargedCost;
+        const previousUncached = prev.uncached ?? (costUncached('opencode', pricingModel, { ...prev, style: 'anthropic' }) ?? previousCost);
+        seen.set(row.id, { ...cur, chargedCost, authoritative, parts, uncached });
+        const total = delta.in + delta.out + delta.cacheRead + delta.cacheW5m;
+        if (total === 0 && cost === 0) continue;
 
-          // OpenCode's token model is Anthropic-shaped for every provider
-          // (input excludes cache; reads and writes reported separately), so
-          // bill it that way. Prefer OpenCode's own cost figure when it has
-          // one; fall back to our table, trying "<provider>/<model>" too.
-          const { model, provider } = modelOf(d);
-          let cost = dCost;
-          let priced = dCost > 0;
-          if (!priced) {
-            const candidates = [model];
-            if (provider && provider !== 'unknown') candidates.push(`${provider.replace(/-/g, '_')}/${model}`);
-            for (const c of candidates) {
-              const computed = costAnthropic(c, delta);
-              if (computed != null) {
-                cost = computed;
-                priced = true;
-                break;
-              }
-            }
-          }
-          if (d.time?.completed) {
-            store.pushActivity({
-              t: d.time.completed, agent: 'opencode', session: row.session_id,
-              cwd: d.path?.cwd || '', kind: 'done', detail: 'turn done',
-            });
-          }
-          store.add({
-            t: d.time?.completed || d.time?.created || row.time_updated || Date.now(),
-            agent: 'opencode',
-            session: row.session_id,
-            model: model || 'unknown',
-            cwd: d.path?.cwd || '',
-            ...delta,
-            style: 'anthropic',
-            cost,
-            priced,
+        if (d.time?.completed) {
+          store.pushActivity({
+            t: d.time.completed, agent: 'opencode', session: row.session_id,
+            cwd: d.path?.cwd || '', kind: 'done', detail: 'turn done',
           });
+        }
+        store.add({
+          t: d.time?.completed || d.time?.created || row.time_updated || Date.now(),
+          agent: 'opencode',
+          session: row.session_id,
+          model: model || 'unknown',
+          cwd: d.path?.cwd || '',
+          ...delta,
+          style: 'anthropic',
+          cost,
+          priced,
+          costParts: partDelta,
+          costNc: uncached - previousUncached,
+        });
+      }
+      persist?.save(WM_KEY, watermark, { seen: Object.fromEntries(seen) });
+    };
+    return {
+      close: () => db.close(),
+      poll() {
+        const before = { watermark, seen: structuredClone(seen) };
+        try {
+          return persist?.batch ? persist.batch(read) : read();
+        } catch (err) {
+          watermark = before.watermark;
+          seen = before.seen;
+          throw err;
         }
       },
     };

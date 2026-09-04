@@ -265,12 +265,12 @@ export default function Page() {
         <div className="flex flex-col gap-3.5">
           <Card className="bento gap-3 py-4">
             <CardContent className="px-4">
-              <SessionsTable sessions={snap?.sessions ?? []} now={snap?.now ?? Date.now()} />
+              <SessionsTable sessions={snap?.sessions ?? []} now={snap?.now ?? 0} />
             </CardContent>
           </Card>
           <Card className="bento flex-1 gap-3 py-4">
             <CardContent className="px-4">
-              <TopProjects sessions={snap?.sessions ?? []} />
+              <TopProjects projects={snap?.projects ?? []} />
             </CardContent>
           </Card>
         </div>

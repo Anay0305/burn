@@ -4,6 +4,7 @@
   "description": "BURN — live token & cost burn-rate monitor for coding agents (Claude Code, Codex, OpenCode). Web dashboard, full-screen TUI, notifications.",
   "type": "module",
   "scripts": {
+    "test": "node --test",
     "start": "node src/server.js",
     "tui": "node src/tui/index.js",
     "web": "node scripts/dev.js",

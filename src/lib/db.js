@@ -15,9 +15,9 @@ const KEEP_MS = 14 * 24 * 3600 * 1000;
 //       Codex input stored net of cached tokens; deep subagent transcripts.
 export const INGEST_VERSION = '2';
 
-export function openDb() {
-  mkdirSync(path.dirname(DB_PATH), { recursive: true });
-  const db = new DatabaseSync(DB_PATH);
+export function openDb(dbPath = DB_PATH) {
+  mkdirSync(path.dirname(dbPath), { recursive: true });
+  const db = new DatabaseSync(dbPath);
   db.exec(`
     PRAGMA journal_mode = WAL;
     PRAGMA synchronous = NORMAL;
@@ -41,6 +41,9 @@ export function openDb() {
       value TEXT
     );
   `);
+  if (!db.prepare('PRAGMA table_info(events)').all().some((column) => column.name === 'details')) {
+    db.exec('ALTER TABLE events ADD COLUMN details TEXT');
+  }
   const stored = db.prepare("SELECT value FROM meta WHERE key = 'ingest_version'").get()?.value ?? null;
   if (stored !== INGEST_VERSION) {
     const had = db.prepare('SELECT count(*) AS n FROM events').get().n;
@@ -76,11 +79,7 @@ export function fileStateStore(db) {
       return { offset: Number(row.offset), extra };
     },
     save(p, offset, extra) {
-      try {
-        put.run(p, offset, extra ? JSON.stringify(extra) : null);
-      } catch (err) {
-        console.error('[db] file_state save:', err.message);
-      }
+      put.run(p, offset, extra ? JSON.stringify(extra) : null);
     },
   };
 }
